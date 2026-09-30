@@ -370,7 +370,17 @@ void madeira_seed_prefix_if_needed(const char *prefix_path) {
     @autoreleasepool {
         if (!prefix_path) return;
         NSString *prefix = [NSString stringWithUTF8String:prefix_path];
-        NSString *stamp = [prefix stringByAppendingPathComponent:@".update-timestamp"];
+        // ml_seed_marker: NOT the tarball's own "prefix/.update-timestamp"
+        // (a real Wine file, extracted 4th of ~138 members -- long before
+        // drive_c and everything under it). Using that as the "already
+        // seeded" check meant any interruption between member #4 and the
+        // end of extraction (app killed, backgrounded-and-terminated, crash
+        // during first-launch JIT setup -- all plausible) left it on disk
+        // with drive_c never created, and every later launch silently
+        // skipped re-extraction forever because the check already passed.
+        // This marker is written by US, only after extraction actually
+        // returns success, so it can only exist when the prefix is real.
+        NSString *stamp = [prefix stringByAppendingPathComponent:@".madeira-prefix-seeded"];
         NSFileManager *fm = [NSFileManager defaultManager];
 
         [fm createDirectoryAtPath:prefix withIntermediateDirectories:YES attributes:nil error:nil];
@@ -384,6 +394,7 @@ void madeira_seed_prefix_if_needed(const char *prefix_path) {
                 if (madeira_extract_prefix_tgz(tgz.UTF8String, prefix_path) != 0) {
                     LOG("prefix extraction FAILED");
                 } else {
+                    [fm createFileAtPath:stamp contents:nil attributes:nil];
                     LOG("prefix seeded to %{public}s", prefix_path);
                 }
             }
