@@ -506,23 +506,42 @@ enum StikJITHelper {
         // now needs. The alias has no placement requirement of its own (FEX
         // derives WriteOffset from the real distance), so send it high, where it
         // lived in every run before ml977, and keep the scarce low gap for RX.
-        rwAddr = 0x7000000000
-        let kr1 = vm_remap(
-            mach_task_self_,
-            &rwAddr,
-            vm_size_t(poolSize),
-            0,
-            VM_FLAGS_ANYWHERE,
-            mach_task_self_,
-            vm_address_t(bitPattern: rxPtr),
-            0, // copy = false
-            &curProt,
-            &maxProt,
-            VM_INHERIT_NONE
-        )
+        // ml_rw_fallback: the hint above (0x7000000000, the default kernel pick
+        // documented at length just above) is tried FIRST and unchanged from
+        // before -- every placement experiment on record (ml93/94/96/97/98)
+        // measured what happens once a placement SUCCEEDS there, none of them
+        // saw vm_remap itself refuse the request outright (KERN_INVALID_ADDRESS,
+        // kr=3). A hard refusal with zero fallback previously killed the whole
+        // launch on some devices/memory layouts even though the RX pool above
+        // placed fine. Retry a short list of other points inside the same
+        // measured-usable ~63GB window (0x7038000000..0x7fffdf0000, see the
+        // comment block above) before giving up -- this only engages when the
+        // primary hint hard-fails, so it does not change the default placement
+        // ml93/97/98 already characterized.
+        let rwCandidates: [vm_address_t] = [0x7000000000, 0x7400000000, 0x7800000000, 0x7c00000000]
+        var kr1: kern_return_t = KERN_INVALID_ADDRESS
+        for (i, candidate) in rwCandidates.enumerated() {
+            rwAddr = candidate
+            kr1 = vm_remap(
+                mach_task_self_,
+                &rwAddr,
+                vm_size_t(poolSize),
+                0,
+                VM_FLAGS_ANYWHERE,
+                mach_task_self_,
+                vm_address_t(bitPattern: rxPtr),
+                0, // copy = false
+                &curProt,
+                &maxProt,
+                VM_INHERIT_NONE
+            )
+            if kr1 == KERN_SUCCESS { break }
+            LogStore.shared.log("ml_rw_fallback: vm_remap hint 0x\(String(candidate, radix: 16)) failed (kr=\(kr1)), attempt \(i + 1)/\(rwCandidates.count)",
+                                 level: .error)
+        }
 
         guard kr1 == KERN_SUCCESS else {
-            LogStore.shared.log("vm_remap failed: \(kr1)", level: .error)
+            LogStore.shared.log("vm_remap failed after \(rwCandidates.count) placement attempts: \(kr1)", level: .error)
             return nil
         }
 
